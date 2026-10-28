@@ -2,7 +2,24 @@
 <html lang="sv">
 <head>
   <meta charset="utf-8" />
-  <title>Pyodide-terminal med input() och funktioner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pyodide-terminal</title>
+  <!--
+    Python i webbläsaren med terminal-input, klasser och funktioner.
+
+    Filer (lägg dem i samma mapp på webbservern):
+      pyodide-terminal.html   denna fil
+      pyterm-helper.js        hjälpfil som gör att input() fungerar
+                              som i en riktig terminal
+
+    Ladda ett program från samma mapp:
+      pyodide-terminal.html?program1.py
+      pyodide-terminal.html?file=program1.py
+      pyodide-terminal.html?ovningar/uppgift1.py
+
+    Saknas hjälpfilen, eller öppnas sidan direkt från datorn,
+    används pop-up-läge: input() frågar i en dialogruta.
+  -->
   <style>
     body {
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
@@ -16,6 +33,8 @@
     #fileInfo { margin: -4px 0 12px; font-size: 0.9rem; color: #555; }
     #fileInfo code { background: #eee; padding: 1px 6px; border-radius: 3px; }
     #fileInfo.load-error { color: #b03a2e; }
+    #modeInfo { margin: -4px 0 12px; font-size: 0.85rem; color: #8a5a00;
+                background: #fff6e0; border: 1px solid #f0d9a0; border-radius: 4px; padding: 6px 10px; }
     #editorToolbar { margin-bottom: 6px; display: flex; gap: 6px; }
     #editorToolbar button { padding: 4px 12px; font-size: 0.85rem; }
     #editor {
@@ -26,12 +45,10 @@
       background: #fff;
       overflow: hidden;
     }
-    /* CodeMirror växer annars fritt med innehållet och svämmar
-       över diven. Detta låser editorn till divens höjd och ger
-       en rullist när koden är längre än rutan. */
+    /* Låser CodeMirror till divens höjd och ger en rullist */
     #editor .cm-editor { height: 100%; }
     #editor .cm-scroller { overflow: auto; }
-    #controls { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+    #controls { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     button {
       padding: 6px 16px;
       font-size: 0.95rem;
@@ -43,6 +60,7 @@
     button:hover:not(:disabled) { background: #eee; }
     button:disabled { opacity: 0.5; cursor: default; }
     #status { font-size: 0.85rem; color: #666; }
+    #status.error { color: #b03a2e; }
     #output {
       width: 100%;
       box-sizing: border-box;
@@ -59,12 +77,14 @@
     }
     #output.waiting-input { border-color: #6ab04c; box-shadow: 0 0 0 2px rgba(106,176,76,0.35); }
     label[for="output"] { display: block; margin-bottom: 4px; font-weight: 600; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
-  <h1>Python i webbläsaren — terminal</h1>
+  <h1>Python i webbläsaren</h1>
 
   <p id="fileInfo" hidden></p>
+  <p id="modeInfo" hidden></p>
 
   <div id="editorToolbar">
     <button id="undoBtn" disabled title="Ångra (Ctrl+Z)">&#8630; Ångra</button>
@@ -76,84 +96,87 @@
     <button id="runBtn" disabled>Kör Python</button>
     <button id="stopBtn" disabled>Stoppa</button>
     <button id="resetBtn" disabled>Starta om miljön</button>
-    <span id="status">Laddar Pyodide…</span>
+    <span id="status">Laddar Python…</span>
   </div>
 
   <label for="output">Terminal</label>
   <textarea id="output" readonly spellcheck="false"></textarea>
-
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.0/full/pyodide.js"></script>
 
   <script type="module">
     import { EditorView, basicSetup } from "https://esm.sh/codemirror";
     import { python } from "https://esm.sh/@codemirror/lang-python";
     import { undo, redo, undoDepth, redoDepth } from "https://esm.sh/@codemirror/commands";
 
-    // Standardexempel, används om ingen fil anges eller filen inte kan läsas.
-    const defaultCode = 'print("Skriv din kod här")';
-    const fileInfo = document.getElementById("fileInfo");
+    const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.0/full/pyodide.mjs";
+    const HELPER      = "pyterm-helper.js";
+    const RELOAD_KEY  = "pyterm-reloaded";
 
-    // Kort form: ?program1.py eller ?ovningar/uppgift1.py
-    // Lång form: ?file=program1.py
-    // Samma grundläggande filnamnsregler som i den tidigare PHP-versionen.
-    async function loadRequestedProgram() {
-      let requested = "";
-      const query = window.location.search.startsWith("?")
-        ? window.location.search.slice(1)
-        : window.location.search;
-      const params = new URLSearchParams(window.location.search);
+    const DEFAULT_CODE = `# Funktioner, klasser och input() fungerar tillsammans
+class Person:
+    def __init__(self, namn, alder):
+        self.namn = namn
+        self.alder = alder
 
-      try {
-        if (params.has("file")) {
-          requested = (params.get("file") || "").trim();
-        } else if (query !== "") {
-          // decodeURIComponent motsvarar rawurldecode: '+' lämnas som plus.
-          requested = decodeURIComponent(query).trim();
-        }
-      } catch (_error) {
-        return { code: defaultCode, error: "Ogiltig URL-kodning i filnamnet." };
-      }
+    def __str__(self):
+        return self.namn + " (" + str(self.alder) + " år)"
 
-      if (requested === "") return { code: defaultCode, loadedFile: null, error: null };
+def skapa_person():
+    namn = input("Vad heter du? ")
+    alder = int(input("Hur gammal är du? "))
+    return Person(namn, alder)
 
-      if (!/^[A-Za-z0-9._/-]+\.py$/.test(requested) ||
-          requested.includes("..") || requested.startsWith("/")) {
-        return { code: defaultCode, error: "Otillåtet filnamn: " + requested };
-      }
+p = skapa_person()
+print("Hej", p)
+`;
 
-      try {
-        const fileUrl = new URL(requested, window.location.href);
-        const currentDirectory = new URL(".", window.location.href);
-        // Säkerställ samma origin och att URL:en ligger under sidans katalog.
-        if (fileUrl.origin !== window.location.origin ||
-            !fileUrl.pathname.startsWith(currentDirectory.pathname) ||
-            !fileUrl.pathname.endsWith(".py")) {
-          return { code: defaultCode, error: "Otillåten filsökväg: " + requested };
-        }
+    // Python-kod som körs en gång när miljön startar
+    const SETUP = `
+import builtins, sys, time, traceback, linecache
+import js
 
-        const response = await fetch(fileUrl.href, { cache: "no-cache" });
-        if (!response.ok) {
-          return { code: defaultCode, error: "Hittar inte filen: " + requested };
-        }
-        const contents = await response.text();
-        return { code: contents, loadedFile: requested, error: null };
-      } catch (_error) {
-        return { code: defaultCode, error: "Kunde inte läsa filen: " + requested };
-      }
-    }
+class _Stopped(BaseException):
+    pass
 
-    const initialProgram = await loadRequestedProgram();
-    if (initialProgram.loadedFile) {
-      fileInfo.hidden = false;
-      fileInfo.textContent = "Program: ";
-      const fileCode = document.createElement("code");
-      fileCode.textContent = initialProgram.loadedFile;
-      fileInfo.appendChild(fileCode);
-    } else if (initialProgram.error) {
-      fileInfo.hidden = false;
-      fileInfo.classList.add("load-error");
-      fileInfo.textContent = initialProgram.error + " — visar standardexemplet i stället.";
-    }
+def _input(prompt=""):
+    if prompt:
+        sys.stdout.write(str(prompt))
+    sys.stdout.flush()
+    svar = js.readLine()
+    if svar is None:
+        raise _Stopped()
+    return svar
+
+builtins.input = _input
+
+def _sleep(sekunder):
+    sys.stdout.flush()
+    if not js.sleepMs(float(sekunder) * 1000):
+        raise _Stopped()
+
+time.sleep = _sleep
+
+def _run_program(source):
+    linecache.cache["<program>"] = (len(source), None, source.splitlines(True), "<program>")
+    ns = {"__name__": "__main__", "__builtins__": builtins}
+    try:
+        code = compile(source, "<program>", "exec")
+        exec(code, ns)
+    except (KeyboardInterrupt, _Stopped):
+        sys.stdout.flush()
+        print("\\n[Körningen avbröts]")
+    except SystemExit:
+        pass
+    except BaseException as e:
+        # Visa bara de delar av felet som hör till studentens program
+        tb = e.__traceback__
+        while tb is not None and tb.tb_frame.f_code.co_filename != "<program>":
+            tb = tb.tb_next
+        sys.stdout.flush()
+        traceback.print_exception(type(e), e, tb)
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+`;
 
     const output   = document.getElementById("output");
     const runBtn   = document.getElementById("runBtn");
@@ -162,16 +185,84 @@
     const status   = document.getElementById("status");
     const undoBtn  = document.getElementById("undoBtn");
     const redoBtn  = document.getElementById("redoBtn");
+    const fileInfo = document.getElementById("fileInfo");
+    const modeInfo = document.getElementById("modeInfo");
 
-    // Aktivera/inaktivera knapparna beroende på om det finns
-    // något att ångra respektive göra om i historiken
+    function setStatus(text, isError = false) {
+      status.textContent = text;
+      status.classList.toggle("error", isError);
+    }
+
+    function safeSession(fn) { try { return fn(window.sessionStorage); } catch { return null; } }
+
+    /* =========================================================
+       Säkerhetshuvuden via hjälpfilen (service worker)
+       =========================================================
+       Om sidan inte redan är isolerad registreras hjälpfilen och
+       sidan laddas om EN gång. Därefter är huvudena på plats.
+       ========================================================= */
+    if (!window.crossOriginIsolated && "serviceWorker" in navigator && window.isSecureContext &&
+        safeSession((s) => s.getItem(RELOAD_KEY)) !== "1") {
+      try {
+        await navigator.serviceWorker.register(HELPER, { scope: location.pathname });
+        await navigator.serviceWorker.ready;
+        safeSession((s) => s.setItem(RELOAD_KEY, "1"));
+        location.reload();
+        await new Promise(() => {});     // vänta på omladdningen
+      } catch (err) {
+        console.warn("Hjälpfilen kunde inte registreras:", err);
+      }
+    }
+    if (window.crossOriginIsolated) safeSession((s) => s.removeItem(RELOAD_KEY));
+
+    /* =========================================================
+       Hämta program från adressen (?program1.py)
+       ========================================================= */
+    async function loadProgram() {
+      const params = new URLSearchParams(location.search);
+      let req = params.has("file") ? params.get("file") : location.search.slice(1);
+      try { req = decodeURIComponent(req); } catch { /* lämna som den är */ }
+      req = req.trim();
+      if (!req) return DEFAULT_CODE;
+
+      const showError = (text) => {
+        fileInfo.textContent = text + " — visar standardexemplet i stället.";
+        fileInfo.className = "load-error";
+        fileInfo.hidden = false;
+      };
+
+      // Bara .py-filer i samma mapp (eller undermapp) som sidan
+      if (!/^[A-Za-z0-9._\/-]+\.py$/.test(req) || req.includes("..") || req.startsWith("/")) {
+        showError("Otillåtet filnamn: " + req);
+        return DEFAULT_CODE;
+      }
+      try {
+        const res = await fetch(req, { cache: "no-cache" });
+        if (!res.ok) throw new Error();
+        const text = await res.text();
+        fileInfo.innerHTML = "Program: <code></code>";
+        fileInfo.querySelector("code").textContent = req;
+        fileInfo.className = "";
+        fileInfo.hidden = false;
+        return text;
+      } catch {
+        showError(location.protocol === "file:"
+          ? "Kan inte läsa " + req + " när sidan öppnas direkt från datorn"
+          : "Hittar inte filen: " + req);
+        return DEFAULT_CODE;
+      }
+    }
+
+    /* =========================================================
+       Editor med ångra/gör om
+       ========================================================= */
     function refreshUndoRedo(state) {
       undoBtn.disabled = undoDepth(state) === 0;
       redoBtn.disabled = redoDepth(state) === 0;
     }
 
     const editor = new EditorView({
-      doc: initialProgram.code,
+      doc: await loadProgram(),
       extensions: [
         basicSetup,
         python(),
@@ -182,38 +273,46 @@
       parent: document.getElementById("editor"),
     });
 
-    undoBtn.addEventListener("click", () => {
-      undo(editor);
-      refreshUndoRedo(editor.state);
-      editor.focus();
-    });
-
-    redoBtn.addEventListener("click", () => {
-      redo(editor);
-      refreshUndoRedo(editor.state);
-      editor.focus();
-    });
+    undoBtn.addEventListener("click", () => { undo(editor); refreshUndoRedo(editor.state); editor.focus(); });
+    redoBtn.addEventListener("click", () => { redo(editor); refreshUndoRedo(editor.state); editor.focus(); });
 
     /* =========================================================
-       Terminal-logik: skriv i output-rutan, Enter skickar input
+       Terminal
        ========================================================= */
-    let inputResolver = null;
-    let inputRejecter = null;
-    let stopRequested = false;
     let lockedText = "";
+    let waitingForInput = false;
+    let pending = "";          // utskrifter som väntar på att ritas ut
+    let flushScheduled = false;
 
-    function appendOutput(s) {
-      output.value += s;
+    // Samlar ihop utskrifter och ritar ut dem högst en gång per
+    // bildruta — annars blir sidan seg vid tusentals print()
+    function queueOutput(s) {
+      pending += s;
+      if (!flushScheduled) {
+        flushScheduled = true;
+        requestAnimationFrame(flushOutput);
+      }
+    }
+
+    function flushOutput() {
+      flushScheduled = false;
+      if (!pending) return;
+      output.value += pending;
+      pending = "";
+      if (!waitingForInput) lockedText = output.value;
       output.scrollTop = output.scrollHeight;
     }
 
     function lockOutput() {
       output.readOnly = true;
       output.classList.remove("waiting-input");
+      waitingForInput = false;
       lockedText = output.value;
     }
 
     function unlockForInput() {
+      flushOutput();
+      waitingForInput = true;
       output.readOnly = false;
       output.classList.add("waiting-input");
       lockedText = output.value;
@@ -237,262 +336,210 @@
 
     // Enter = skicka raden till Python
     output.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && inputResolver) {
+      if (e.key === "Enter" && waitingForInput) {
         e.preventDefault();
         const userInput = output.value.substring(lockedText.length);
-        appendOutput("\n");
+        output.value += "\n";
         lockOutput();
-        const resolve = inputResolver;
-        inputResolver = null;
-        inputRejecter = null;
-        resolve(userInput);
+        sendInput(userInput);
       }
     });
 
-    // Funktioner som Python-sidan anropar via js-modulen
-    window.term_write  = appendOutput;
-    window.term_input  = () => new Promise((resolve, reject) => {
-      inputResolver = resolve;
-      inputRejecter = reject;
-    });
-    window.term_unlock = unlockForInput;
-    window.term_lock   = lockOutput;
-    window.term_stop_requested = () => stopRequested;
-    // Släpper fram webbläsarens event-loop en kort stund, så att
-    // klick (t.ex. på Stoppa) hinner registreras och terminalen ritas om
-    window.term_tick   = () => new Promise((r) => setTimeout(r, 0));
-
     /* =========================================================
-       Pyodide + AST-transformation
-       =========================================================
-       Knepet: i stället för att regex-ersätta "input(" gör vi en
-       riktig AST-omskrivning i Python:
-         1. Alla funktionsdefinitioner görs om till async def.
-         2. Alla anrop f(...) blir await _await_if_needed(f(...)).
-       _await_if_needed awaitar bara om värdet är awaitable, så
-       vanliga anrop (print, int, range, egna funktioner) fungerar
-       precis som vanligt, och input() kan vänta på användaren.
+       Läge 1: bakgrundstråd (terminal-input, Stoppa fungerar)
        ========================================================= */
-
-    const SETUP_CODE = `
-import ast
-import builtins
-import inspect
-import sys
-import time
-import js
-
-# ---- avbrytning ----
-class ExecutionStopped(Exception):
-    pass
-
-_last_tick = [0.0]
-
-async def _checkpoint():
-    # Anropas i början av varje loopvarv och funktionsanrop.
-    # Max ca var 30:e ms: lämna över till webbläsaren (så att
-    # Stoppa-knappen och terminalen fungerar) och kolla stoppflaggan.
-    now = time.monotonic()
-    if now - _last_tick[0] >= 0.03:
-        _last_tick[0] = now
-        await js.term_tick()
-        if js.term_stop_requested():
-            raise ExecutionStopped()
-
-builtins._checkpoint = _checkpoint
-
-# ---- stdout/stderr till terminalen ----
-class _TermWriter:
-    def write(self, s):
-        if s:
-            js.term_write(s)
-        return len(s)
-    def flush(self):
-        pass
-
-sys.stdout = _TermWriter()
-sys.stderr = _TermWriter()
-
-# ---- asynkron input() utan pop-up ----
-async def _term_input(prompt=""):
-    if prompt:
-        js.term_write(str(prompt))
-    js.term_unlock()
-    try:
-        value = await js.term_input()
-    except Exception:
-        # Promisen rejectas när användaren trycker Stoppa
-        raise ExecutionStopped()
-    return value
-
-builtins.input = _term_input
-
-# ---- hjälpare: awaita bara det som är awaitable ----
-async def _await_if_needed(v):
-    if inspect.isawaitable(v):
-        return await v
-    return v
-
-builtins._await_if_needed = _await_if_needed
-
-# ---- AST-transformation ----
-def _checkpoint_stmt():
-    return ast.Expr(value=ast.Await(value=ast.Call(
-        func=ast.Name(id="_checkpoint", ctx=ast.Load()),
-        args=[], keywords=[],
-    )))
-
-class _Asyncify(ast.NodeTransformer):
-    def visit_FunctionDef(self, node):
-        # Generatorfunktioner (med yield) lämnas orörda,
-        # annars skulle de bli async-generatorer.
-        for n in ast.walk(node):
-            if isinstance(n, (ast.Yield, ast.YieldFrom)):
-                return node
-        self.generic_visit(node)
-        node.__class__ = ast.AsyncFunctionDef  # samma fält, bara byt nodtyp
-        # Checkpoint vid funktionsstart, så att t.ex. oändlig
-        # rekursion utan loopar också går att stoppa
-        node.body.insert(0, _checkpoint_stmt())
-        return node
-
-    def visit_While(self, node):
-        self.generic_visit(node)
-        # Checkpoint i varje loopvarv — gör att även
-        # "while True: pass" kan avbrytas
-        node.body.insert(0, _checkpoint_stmt())
-        return node
-
-    def visit_For(self, node):
-        self.generic_visit(node)
-        node.body.insert(0, _checkpoint_stmt())
-        return node
-
-    def visit_AsyncFunctionDef(self, node):
-        self.generic_visit(node)
-        return node
-
-    def visit_Lambda(self, node):
-        # await är inte tillåtet i lambda-kroppar
-        return node
-
-    def visit_ClassDef(self, node):
-        # Transformera bara metoder, inte anrop direkt i klasskroppen
-        node.body = [
-            self.visit(n) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else n
-            for n in node.body
-        ]
-        return node
-
-    def visit_Call(self, node):
-        self.generic_visit(node)
-        wrapped = ast.Await(
-            value=ast.Call(
-                func=ast.Name(id="_await_if_needed", ctx=ast.Load()),
-                args=[node],
-                keywords=[],
-            )
-        )
-        return ast.copy_location(wrapped, node)
-
-async def __run_student_code(source):
-    tree = ast.parse(source, filename="<program>")
-    tree = _Asyncify().visit(tree)
-    ast.fix_missing_locations(tree)
-    code_obj = compile(
-        tree, "<program>", "exec",
-        flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
-    )
-    ns = {"__name__": "__main__"}
-    try:
-        result = eval(code_obj, ns)
-        if inspect.isawaitable(result):
-            await result
-    except ExecutionStopped:
-        print("\\n[Körningen avbröts]")
-`;
-
-    let pyodide = null;
+    const READY = 1, STOPPED = 2;
+    let worker = null;
+    let ctrl, data, interrupt;
     let running = false;
 
-    async function initPyodide() {
-      runBtn.disabled = true;
-      resetBtn.disabled = true;
-      status.textContent = "Laddar Pyodide…";
-      pyodide = await loadPyodide();
-      await pyodide.runPythonAsync(SETUP_CODE);
-      status.textContent = "Klar. Tryck Kör.";
-      runBtn.disabled = false;
-      resetBtn.disabled = false;
+    function sendInput(text) {
+      let bytes = new TextEncoder().encode(text);
+      if (bytes.length > data.length) bytes = bytes.slice(0, data.length);
+      data.set(bytes);
+      Atomics.store(ctrl, 1, bytes.length);
+      Atomics.store(ctrl, 0, READY);
+      Atomics.notify(ctrl, 0);
     }
 
-    runBtn.addEventListener("click", async () => {
-      if (!pyodide || running) return;
-      running = true;
-      stopRequested = false;
-      runBtn.disabled = true;
-      stopBtn.disabled = false;
-      status.textContent = "Kör… (Stoppa avbryter)";
-      output.value = "";
-      lockOutput();
+    function startWorker() {
+      if (worker) worker.terminate();
+      running = false;
+      runBtn.disabled = stopBtn.disabled = resetBtn.disabled = true;
+      setStatus("Laddar Python…");
 
-      const code = editor.state.doc.toString();
-      pyodide.globals.set("__student_source", code);
+      ctrl      = new Int32Array(new SharedArrayBuffer(8));
+      data      = new Uint8Array(new SharedArrayBuffer(1 << 16));
+      interrupt = new Uint8Array(new SharedArrayBuffer(1));
+
+      // Med hjälpfilen som service worker: starta tråden via sidans
+      // egen adress (hjälpfilen svarar med rätt kod). Skickar servern
+      // själv huvudena kan hjälpfilen laddas direkt.
+      const workerUrl = navigator.serviceWorker && navigator.serviceWorker.controller
+        ? location.pathname + "?__pyterm_worker"
+        : HELPER;
+      try {
+        worker = new Worker(workerUrl);
+      } catch (err) {
+        setStatus("Kunde inte starta bakgrundstråden: " + err, true);
+        resetBtn.disabled = false;
+        return;
+      }
+
+      worker.onmessage = (e) => {
+        const msg = e.data;
+        switch (msg.type) {
+          case "ready":
+            setStatus("Klar. Tryck Kör.");
+            runBtn.disabled = resetBtn.disabled = false;
+            break;
+          case "stdout":
+          case "stderr":
+            queueOutput(msg.text);
+            break;
+          case "input":
+            unlockForInput();
+            break;
+          case "done":
+            flushOutput();
+            lockOutput();
+            running = false;
+            runBtn.disabled = false;
+            stopBtn.disabled = true;
+            setStatus("Klar. Tryck Kör.");
+            break;
+          case "fatal":
+            setStatus("Kunde inte starta Python: " + msg.text, true);
+            resetBtn.disabled = false;
+            break;
+        }
+      };
+      worker.onerror = (e) => {
+        e.preventDefault();
+        setStatus("Fel i bakgrundstråden: " + (e.message ||
+          "kunde inte ladda " + HELPER + " (ligger den i samma mapp som sidan?)"), true);
+        resetBtn.disabled = false;
+      };
+
+      worker.postMessage({
+        type: "init",
+        pyodideUrl: PYODIDE_URL,
+        setup: SETUP,
+        ctrlBuf: ctrl.buffer,
+        dataBuf: data.buffer,
+        interruptBuf: interrupt.buffer,
+      });
+    }
+
+    /* =========================================================
+       Läge 2: pop-up (när hjälpfilen inte kan användas)
+       =========================================================
+       Python körs direkt på sidan och input() frågar i en
+       dialogruta. Dialogen visar de senaste raderna i terminalen
+       så att man ser frågan. Stoppa går inte i detta läge.
+       ========================================================= */
+    let pyMain = null;
+
+    async function startPopupMode() {
+      runBtn.disabled = stopBtn.disabled = resetBtn.disabled = true;
+      setStatus("Laddar Python…");
+      modeInfo.textContent =
+        "Pop-up-läge: input() frågar i en dialogruta och Stoppa fungerar inte. " +
+        "För terminal-input: lägg sidan på en webbserver tillsammans med " + HELPER + ".";
+      modeInfo.hidden = false;
+
+      window.readLine = () => {
+        const recent = output.value.split("\n").slice(-12).join("\n");
+        const svar = window.prompt(recent || "input():");
+        if (svar === null) return null;          // Avbryt = stoppa programmet
+        output.value += svar + "\n";
+        lockedText = output.value;
+        return svar;
+      };
+      window.sleepMs = (ms) => {
+        const end = performance.now() + ms;
+        while (performance.now() < end) { /* vänta */ }
+        return true;
+      };
 
       try {
-        await pyodide.runPythonAsync("await __run_student_code(__student_source)");
+        const { loadPyodide } = await import(PYODIDE_URL);
+        pyMain = await loadPyodide();
+        const decoder = new TextDecoder();
+        const write = (buf) => {
+          output.value += decoder.decode(buf, { stream: true });
+          lockedText = output.value;
+          output.scrollTop = output.scrollHeight;
+          return buf.length;
+        };
+        pyMain.setStdout({ write });
+        pyMain.setStderr({ write });
+        pyMain.setStdin({ stdin: () => { const s = window.readLine(); return s === null ? null : s + "\n"; } });
+        pyMain.runPython(SETUP);
+        setStatus("Klar. Tryck Kör.");
+        runBtn.disabled = resetBtn.disabled = false;
       } catch (err) {
-        appendOutput("\n[Fel]\n" + formatError(String(err)));
-      } finally {
-        lockOutput();
-        running = false;
-        stopRequested = false;
-        inputResolver = null;
-        inputRejecter = null;
-        runBtn.disabled = false;
-        stopBtn.disabled = true;
-        status.textContent = "Klar. Tryck Kör.";
+        setStatus("Kunde inte starta Python: " + err, true);
+        resetBtn.disabled = false;
+      }
+    }
+
+    /* =========================================================
+       Knappar
+       ========================================================= */
+    const useWorker = window.crossOriginIsolated;
+
+    runBtn.addEventListener("click", () => {
+      if (running) return;
+      running = true;
+      runBtn.disabled = true;
+      output.value = "";
+      pending = "";
+      lockOutput();
+      const code = editor.state.doc.toString();
+
+      if (useWorker) {
+        stopBtn.disabled = false;
+        setStatus("Kör… (Stoppa avbryter)");
+        interrupt[0] = 0;
+        worker.postMessage({ type: "run", code });
+      } else {
+        setStatus("Kör…");
+        // Låt sidan ritas om innan Python tar över
+        setTimeout(() => {
+          try {
+            pyMain.globals.get("_run_program")(code);
+          } catch (err) {
+            output.value += "\n[Internt fel] " + err + "\n";
+          }
+          running = false;
+          runBtn.disabled = false;
+          setStatus("Klar. Tryck Kör.");
+        }, 30);
       }
     });
 
     stopBtn.addEventListener("click", () => {
-      if (!running) return;
-      stopRequested = true;
-      status.textContent = "Stoppar…";
-      // Väntar programmet på input just nu? Rejecta promisen så att
-      // Python vaknar direkt i stället för att vänta på Enter.
-      if (inputRejecter) {
-        const reject = inputRejecter;
-        inputResolver = null;
-        inputRejecter = null;
-        lockOutput();
-        reject(new Error("stopped"));
-      }
-    });
-
-    // Rensa bort de interna wrapper-raderna ur tracebacken
-    function formatError(text) {
-      return text
-        .split("\n")
-        .filter(line =>
-          !line.includes("pyodide") &&
-          !line.includes("__run_student_code") &&
-          !line.includes("_await_if_needed") &&
-          !line.includes("_checkpoint") &&
-          !line.includes('File "<exec>"')
-        )
-        .join("\n");
-    }
-
-    resetBtn.addEventListener("click", async () => {
-      if (running) return;
-      output.value = "";
+      if (!running || !useWorker) return;
+      stopBtn.disabled = true;
+      setStatus("Stoppar…");
+      interrupt[0] = 2;                 // 2 = SIGINT → KeyboardInterrupt i Python
       lockOutput();
-      pyodide = null;
-      await initPyodide();
+      Atomics.store(ctrl, 0, STOPPED);  // väcker input() / time.sleep() om de väntar
+      Atomics.notify(ctrl, 0);
     });
 
-    initPyodide();
+    resetBtn.addEventListener("click", () => {
+      output.value = "";
+      pending = "";
+      lockOutput();
+      if (useWorker) startWorker(); else startPopupMode();
+    });
+
+    /* =========================================================
+       Start
+       ========================================================= */
+    if (useWorker) startWorker(); else startPopupMode();
   </script>
 </body>
 </html>
