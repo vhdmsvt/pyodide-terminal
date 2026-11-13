@@ -40,9 +40,12 @@ if (typeof ServiceWorkerGlobalScope !== "undefined" &&
         .then((res) => {
           if (res.status === 0) return res;   // opakt svar, kan inte ändras
           const h = new Headers(res.headers);
-          h.set("Cross-Origin-Embedder-Policy", "require-corp");
-          h.set("Cross-Origin-Opener-Policy", "same-origin");
-          h.set("Cross-Origin-Resource-Policy", "cross-origin");
+           
+h.set("Cross-Origin-Embedder-Policy", "require-corp");
+h.set("Cross-Origin-Opener-Policy", "same-origin");
+h.set("Cross-Origin-Resource-Policy", "cross-origin");
+h.set("Document-Isolation-Policy", "isolate-and-require-corp");   // ny rad
+           
           return new Response(res.body, {
             status: res.status,
             statusText: res.statusText,
