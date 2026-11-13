@@ -108,8 +108,8 @@
     import { undo, redo, undoDepth, redoDepth } from "https://esm.sh/@codemirror/commands";
 
     const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.26.0/full/pyodide.mjs";
-    const  HELPER     = "pyterm-helper.js";
-    //const HELPER        = "https://vhdmsvt.github.io/pyodide-terminal/pyterm-helper.js";
+    //const       = "pyterm-helper.js";
+    const HELPER        = "https://vhdmsvt.github.io/pyodide-terminal/pyterm-helper.js";
     const RELOAD_KEY  = "pyterm-reloaded";
 
     const DEFAULT_CODE = ` print("Skriv din kod här")`;
@@ -186,7 +186,17 @@ def _run_program(source):
        Om sidan inte redan är isolerad registreras hjälpfilen och
        sidan laddas om EN gång. Därefter är huvudena på plats.
        ========================================================= */
-    if (!window.crossOriginIsolated && "serviceWorker" in navigator && window.isSecureContext &&
+    // Ladda bara om när sessionStorage fungerar. I en inbäddad sida
+    // kan lagringen vara blockerad, och då skulle spärren nedan aldrig
+    // sättas → sidan laddas om i en oändlig loop.
+    const storageOk = safeSession((s) => {
+      s.setItem("pyterm-test", "1");
+      s.removeItem("pyterm-test");
+      return true;
+    }) === true;
+
+    if (!window.crossOriginIsolated && storageOk &&
+        "serviceWorker" in navigator && window.isSecureContext &&
         safeSession((s) => s.getItem(RELOAD_KEY)) !== "1") {
       try {
         await navigator.serviceWorker.register(HELPER, { scope: location.pathname });
@@ -199,6 +209,9 @@ def _run_program(source):
       }
     }
     if (window.crossOriginIsolated) safeSession((s) => s.removeItem(RELOAD_KEY));
+
+    // Ligger sidan i en iframe? (Åtkomst till window.top kan kasta fel.)
+    const inIframe = (() => { try { return window.self !== window.top; } catch { return true; } })();
 
     /* =========================================================
        Hämta program från adressen (?program1.py)
@@ -428,9 +441,23 @@ def _run_program(source):
     async function startPopupMode() {
       runBtn.disabled = stopBtn.disabled = resetBtn.disabled = true;
       setStatus("Laddar Python…");
-      modeInfo.textContent =
-        "Pop-up-läge: input() frågar i en dialogruta och Stoppa fungerar inte. " +
-        "För terminal-input: lägg sidan på en webbserver tillsammans med " + HELPER + ".";
+      if (inIframe) {
+        // I en iframe går terminal-input oftast inte att få igång
+        // (utom i Chrome/Edge med Document-Isolation-Policy). Erbjud ny flik.
+        modeInfo.textContent =
+          "Pop-up-läge: input() frågar i en dialogruta och Stoppa fungerar inte. " +
+          "Terminal-input fungerar inte inbäddat i den här webbläsaren. ";
+        const link = document.createElement("a");
+        link.href = location.href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Öppna i ny flik";
+        modeInfo.append(link, " för att använda terminalen.");
+      } else {
+        modeInfo.textContent =
+          "Pop-up-läge: input() frågar i en dialogruta och Stoppa fungerar inte. " +
+          "För terminal-input: lägg sidan på en webbserver tillsammans med " + HELPER + ".";
+      }
       modeInfo.hidden = false;
 
       window.readLine = () => {
