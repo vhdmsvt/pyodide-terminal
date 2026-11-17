@@ -1,0 +1,41 @@
+
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <title>Worker test</title>
+</head>
+<body>
+    <button id="start">Starta worker</button>
+    <p id="result">Väntar...</p>
+
+    <script>
+        const code = `
+            onmessage = (e) => {
+                postMessage("Worker fungerar! " + e.data);
+            };
+        `;
+
+        const blob = new Blob([code], {
+            type: "text/javascript"
+        });
+
+        const url = URL.createObjectURL(blob);
+        const worker = new Worker(url);
+        URL.revokeObjectURL(url);
+
+        worker.onmessage = (e) => {
+            document.getElementById("result").textContent = e.data;
+        };
+
+        worker.onerror = (e) => {
+            document.getElementById("result").textContent =
+                "Worker-fel: " + e.message;
+        };
+
+        document.getElementById("start").onclick = () => {
+            worker.postMessage("Hej från huvudtråden!");
+        };
+    </script>
+</body>
+</html>
