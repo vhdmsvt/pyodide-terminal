@@ -103,6 +103,16 @@
   <textarea id="output" readonly spellcheck="false"></textarea>
 
   <script type="module">
+console.table({
+    iframe: window.self !== window.top,
+    secureContext: window.isSecureContext,
+    crossOriginIsolated: window.crossOriginIsolated,
+    SharedArrayBuffer: typeof SharedArrayBuffer,
+    serviceWorker: "serviceWorker" in navigator,
+    serviceWorkerController:
+        !!navigator.serviceWorker?.controller
+});
+    
     import { EditorView, basicSetup } from "https://esm.sh/codemirror";
     import { python } from "https://esm.sh/@codemirror/lang-python";
     import { undo, redo, undoDepth, redoDepth } from "https://esm.sh/@codemirror/commands";
